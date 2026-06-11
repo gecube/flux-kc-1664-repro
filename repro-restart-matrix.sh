@@ -24,6 +24,10 @@ fail() { printf '  \033[1;31mFAIL\033[0m %s\n' "$*"; }
 # --- helpers reused from repro.sh -----------------------------------------
 
 reset_cluster_state() {
+  # Drop any leftover VAP from earlier scenarios first, otherwise the DELETEs
+  # below get blocked and reset hangs.
+  kubectl delete validatingadmissionpolicybinding kc-1664-block-delete-binding --ignore-not-found 2>/dev/null || true
+  kubectl delete validatingadmissionpolicy kc-1664-block-delete --ignore-not-found 2>/dev/null || true
   kubectl -n flux-system delete kustomization kc-1664 --ignore-not-found --wait=true 2>/dev/null || true
   kubectl -n flux-system delete gitrepository kc-1664 --ignore-not-found 2>/dev/null || true
   if kubectl get ns kc-1664 >/dev/null 2>&1; then
@@ -223,6 +227,53 @@ run_scenario() {
     none)
       commit_and_push "feat: consolidation (stage C)"
       ;;
+    webhook-deny-delete)
+      # Install a ValidatingAdmissionPolicy that denies DELETE for app-1[abc]
+      # in kc-1664. Then run B→C. Flux's prune attempt should be REJECTED
+      # (HTTP 4xx, no deletionTimestamp set), simulating the production case.
+      kubectl apply -f - <<'YAML'
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kc-1664-block-delete
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["DELETE"]
+      resources: ["configmaps"]
+  validations:
+  - expression: "!(oldObject.metadata.name in ['app-1a','app-1b','app-1c'])"
+    message: "kc-1664-block-delete: refuse DELETE for app-1a/1b/1c"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kc-1664-block-delete-binding
+spec:
+  policyName: kc-1664-block-delete
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kc-1664
+YAML
+      sleep 2
+      commit_and_push "feat: consolidation (stage C)"
+      ;;
+    strip-managed-fields)
+      # Wipe managedFields from app-1a/1b/1c (simulates a tool that does
+      # get-yaml | sed -d managedFields | replace). Then continue B→C.
+      for az in 1a 1b 1c; do
+        kubectl -n kc-1664 get cm "app-${az}" -o json \
+          | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]["managedFields"]=[]; print(json.dumps(d))' \
+          | kubectl replace --raw "/api/v1/namespaces/kc-1664/configmaps/app-${az}" -f - >/dev/null
+      done
+      kubectl -n kc-1664 get cm -o jsonpath='{range .items[*]}{.metadata.name}{"  managedFields="}{.metadata.managedFields}{"\n"}{end}' | grep ^app- | head -3
+      commit_and_push "feat: consolidation (stage C)"
+      ;;
   esac
 
   kubectl -n flux-system rollout status deploy/kustomize-controller --timeout=60s >/dev/null
@@ -247,12 +298,8 @@ run_scenario() {
 
 # --- matrix ---------------------------------------------------------------
 declare -a scenarios=(
-  "none"
-  "before-c-push"
-  "right-after-c-push"
-  "during-c-reconcile"
-  "after-c-apply"
-  "spam"
+  "webhook-deny-delete"
+  "strip-managed-fields"
 )
 
 declare -a results=()
