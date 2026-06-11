@@ -13,11 +13,13 @@ KIND_CLUSTER="${KIND_CLUSTER:-flux-kc-1664}"
 WORKDIR="${WORKDIR:-$HOME/flux-kc-1664-repro}"
 INTERVAL="30s"
 WITH_FINALIZER=0
+WITH_RESTART=0
 CLEANUP=0
 
 for arg in "$@"; do
   case "$arg" in
     --with-finalizer) WITH_FINALIZER=1 ;;
+    --with-restart) WITH_RESTART=1 ;;
     --cleanup) CLEANUP=1 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
@@ -171,6 +173,22 @@ kubectl config use-context "kind-$KIND_CLUSTER" >/dev/null
 if ! kubectl get ns flux-system >/dev/null 2>&1; then
   flux install --components=source-controller,kustomize-controller
 fi
+# kindnet >=v0.32 enforces NetworkPolicies; flux's defaults block egress in kind. Drop them for the test.
+kubectl -n flux-system delete netpol allow-egress allow-scraping allow-webhooks --ignore-not-found
+kubectl -n flux-system rollout restart deploy/source-controller deploy/kustomize-controller >/dev/null 2>&1 || true
+kubectl -n flux-system rollout status deploy/source-controller --timeout=90s
+kubectl -n flux-system rollout status deploy/kustomize-controller --timeout=90s
+
+# Patch CoreDNS to use public DNS (OrbStack's internal resolver isn't reachable from pod network).
+kubectl -n kube-system get cm coredns -o json | python3 -c "
+import json, sys
+d=json.load(sys.stdin)
+new=d['data']['Corefile'].replace('forward . /etc/resolv.conf','forward . 1.1.1.1 8.8.8.8')
+if new!=d['data']['Corefile']:
+    d['data']['Corefile']=new
+    print(json.dumps(d))
+" | { read -r line && [[ -n "$line" ]] && { echo "$line"; cat; } | kubectl apply -f - && kubectl -n kube-system rollout restart deploy/coredns; } || true
+
 kubectl create ns kc-1664 --dry-run=client -o yaml | kubectl apply -f -
 
 log "stage A: layered overlay produces app-1a, app-1b, app-1c, app-flat"
@@ -217,7 +235,12 @@ flux reconcile kustomization kc-1664 -n flux-system --with-source || true
 
 log "stage B status (expect BuildFailed)"
 flux get kustomization kc-1664 -n flux-system || true
-kubectl -n flux-system logs deploy/kustomize-controller --tail=20 | grep -iE 'kc-1664|build|error' | tail -20 || true
+
+if [[ $WITH_RESTART -eq 1 ]]; then
+  log "kill kustomize-controller mid-transient (variant 3 hypothesis)"
+  kubectl -n flux-system delete pod -l app=kustomize-controller --wait=false
+  kubectl -n flux-system rollout status deploy/kustomize-controller --timeout=90s
+fi
 
 log "stage C: drop apps/ entirely, consolidated remains"
 write_stage_C
