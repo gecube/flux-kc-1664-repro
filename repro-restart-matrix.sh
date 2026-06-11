@@ -297,16 +297,20 @@ YAML
 }
 
 # --- matrix ---------------------------------------------------------------
-declare -a scenarios=(
-  "none"
-  "before-c-push"
-  "right-after-c-push"
-  "during-c-reconcile"
-  "after-c-apply"
-  "spam"
-  "webhook-deny-delete"
-  "strip-managed-fields"
-)
+if [[ -n "${SCENARIOS:-}" ]]; then
+  read -ra scenarios <<<"$SCENARIOS"
+else
+  declare -a scenarios=(
+    "none"
+    "before-c-push"
+    "right-after-c-push"
+    "during-c-reconcile"
+    "after-c-apply"
+    "spam"
+    "webhook-deny-delete"
+    "strip-managed-fields"
+  )
+fi
 
 declare -a results=()
 for s in "${scenarios[@]}"; do
