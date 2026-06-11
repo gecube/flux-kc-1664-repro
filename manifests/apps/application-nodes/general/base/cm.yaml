@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app
+  namespace: kc-1664
+data:
+  origin: layered
