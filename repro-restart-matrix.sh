@@ -298,9 +298,14 @@ YAML
 
 # --- matrix ---------------------------------------------------------------
 declare -a scenarios=(
+  "none"
+  "before-c-push"
+  "right-after-c-push"
+  "during-c-reconcile"
+  "after-c-apply"
+  "spam"
   "webhook-deny-delete"
-  "webhook-deny-delete"
-  "webhook-deny-delete"
+  "strip-managed-fields"
 )
 
 declare -a results=()

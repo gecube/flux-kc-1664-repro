@@ -75,17 +75,33 @@ Key data points:
    completes the deletion immediately — proving the only thing standing
    between the orphan state and a clean cluster is a Flux retry that never happens.
 
-## Production variant that this reproducer does NOT yet cover
+## Production-equivalent orphan state — reproduced
 
-In our production trigger (#1664), the surviving orphans had `deletionTimestamp:
-null` — i.e. Flux never even issued a delete, or the request was rejected
-before reaching the deletion phase. We have not reproduced that exact state
-locally yet; the likely candidates are:
+The production case had orphans with `deletionTimestamp: null` (no delete in
+flight). That state is reproduced exactly by `repro-restart-matrix.sh`, scenario
+`webhook-deny-delete`:
 
-- a validating webhook rejecting the DELETE outright, or
-- a kustomize-controller pod restart **before** the prune step in a reconcile
-  that was about to delete the resource, combined with subsequent rapid
-  commits that race the new pod's first reconcile.
+```
+app-1a  deletionTimestamp=  finalizers=  managedFields=kustomize-controller,
+app-1b  deletionTimestamp=  finalizers=  managedFields=kustomize-controller,
+app-1c  deletionTimestamp=  finalizers=  managedFields=kustomize-controller,
+inventory:  kc-1664_app-flat__ConfigMap     # only app-flat tracked
+```
 
-`--with-restart` is included to probe the second case but in current runs
-behaves identically to variant 2.
+Setup: a `ValidatingAdmissionPolicy` rejects `DELETE` for `app-1a/1b/1c` in the
+target namespace. Flux issues the prune DELETE; the apiserver returns 4xx
+*before* setting `deletionTimestamp`; Flux logs an error but advances
+`status.inventory` past the orphans regardless.
+
+3/3 consecutive runs reproduce. In real-world terms, this is what happens when
+a controller's validating webhook (e.g. Karpenter's EC2NodeClass validation)
+refuses the delete because a sibling resource still references the one being
+pruned.
+
+## Restart-only hypothesis: NOT confirmed
+
+I ran six controller-restart timings (no finalizer, no webhook) — `none`,
+`before-c-push`, `right-after-c-push`, `during-c-reconcile`, `after-c-apply`,
+and a 12× rapid-kill `spam`. Every single one pruned cleanly. Killing the
+kustomize-controller alone, in any timing relative to the A→B→C transition,
+does not produce orphans. The restart hypothesis is ruled out as a sole cause.
