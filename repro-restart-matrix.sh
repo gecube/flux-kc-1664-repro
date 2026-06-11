@@ -299,7 +299,8 @@ YAML
 # --- matrix ---------------------------------------------------------------
 declare -a scenarios=(
   "webhook-deny-delete"
-  "strip-managed-fields"
+  "webhook-deny-delete"
+  "webhook-deny-delete"
 )
 
 declare -a results=()
