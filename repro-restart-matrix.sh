@@ -135,7 +135,10 @@ kill_kc_pod() {
 }
 
 orphan_count() {
-  kubectl -n kc-1664 get cm -o name 2>/dev/null | grep -cE 'app-(1a|1b|1c)$' || echo 0
+  local n
+  n=$(kubectl -n kc-1664 get cm -o name 2>/dev/null | grep -cE 'app-(1a|1b|1c)$' || true)
+  [[ -z "$n" ]] && n=0
+  echo "$n"
 }
 
 inventory_entries() {
