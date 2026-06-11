@@ -170,6 +170,16 @@ if ! kind get clusters | grep -qx "$KIND_CLUSTER"; then
 fi
 kubectl config use-context "kind-$KIND_CLUSTER" >/dev/null
 
+# Idempotent reset: drop any prior reproducer state on the cluster.
+kubectl -n flux-system delete kustomization kc-1664 --ignore-not-found --wait=true 2>/dev/null || true
+kubectl -n flux-system delete gitrepository kc-1664 --ignore-not-found 2>/dev/null || true
+if kubectl get ns kc-1664 >/dev/null 2>&1; then
+  for cm in $(kubectl -n kc-1664 get cm -o name 2>/dev/null | grep -E 'app(-1a|-1b|-1c|-flat)$'); do
+    kubectl -n kc-1664 patch "$cm" --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true
+  done
+  kubectl -n kc-1664 delete cm --all --wait=true 2>/dev/null || true
+fi
+
 if ! kubectl get ns flux-system >/dev/null 2>&1; then
   flux install --components=source-controller,kustomize-controller
 fi
@@ -257,10 +267,20 @@ echo "Kustomization inventory entries:"
 kubectl get kustomization kc-1664 -n flux-system -o jsonpath='{range .status.inventory.entries[*]}{.id}{"\n"}{end}'
 echo "---"
 remaining=$(kubectl get cm -n kc-1664 -o name 2>/dev/null | grep -cE 'app-(1a|1b|1c)$' || true)
+expect_orphans=$WITH_FINALIZER
 if [[ "$remaining" -gt 0 ]]; then
-  bad "BUG REPRODUCED: $remaining per-AZ ConfigMap(s) survived after stage C consolidation"
-  kubectl get cm -n kc-1664 -l kustomize.toolkit.fluxcd.io/name=kc-1664 -o jsonpath='{range .items[*]}{.metadata.name}{"  deletionTimestamp="}{.metadata.deletionTimestamp}{"  finalizers="}{.metadata.finalizers}{"\n"}{end}'
-  exit 1
+  if [[ "$expect_orphans" -eq 1 ]]; then
+    bad "BUG REPRODUCED (as expected with finalizer): $remaining per-AZ ConfigMap(s) survived after stage C"
+    kubectl get cm -n kc-1664 -o jsonpath='{range .items[*]}{.metadata.name}{"  deletionTimestamp="}{.metadata.deletionTimestamp}{"  finalizers="}{.metadata.finalizers}{"\n"}{end}' | grep -E '^app-' || true
+    exit 42  # distinct code for "bug observed"
+  else
+    bad "UNEXPECTED: $remaining orphans without a finalizer — investigate"
+    exit 1
+  fi
 else
-  ok "no orphans — Flux pruned the per-AZ ConfigMaps correctly"
+  if [[ "$expect_orphans" -eq 1 ]]; then
+    ok "UNEXPECTED PASS: no orphans even with finalizer — bug not reproduced this run"
+  else
+    ok "no orphans — Flux pruned the per-AZ ConfigMaps correctly (baseline behaviour)"
+  fi
 fi

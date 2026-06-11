@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: app-flat
-  namespace: kc-1664
-data:
-  origin: consolidated
